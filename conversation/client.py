@@ -2,10 +2,13 @@
 This module provides an interface for interacting with a conversation API.
 
 It includes a ConversationAPI class that allows users to send prompts and
-receive responses from a specified API endpoint.
+receive responses from a specified API endpoint. It supports both full and
+chunked responses.
 """
 import json
+
 from abc import ABC, abstractmethod
+from typing import Generator, Union
 
 import requests
 
@@ -16,16 +19,17 @@ class APIClient(ABC):
     """
 
     @abstractmethod
-    def send_request(self, data):
+    def send_request(self, data: dict) -> requests.Response:
         """
         Send a request to the API.
         """
 
 
 class ConversationAPIClient(APIClient):
-    """Client for interacting with the conversation API."""
-
-    def __init__(self, base_url='http://127.0.0.1:8080'):
+    """
+    Client for interacting with the conversation API.
+    """
+    def __init__(self, base_url: str = 'http://127.0.0.1:8080'):
         """
         Initialize the ConversationAPIClient.
 
@@ -34,7 +38,7 @@ class ConversationAPIClient(APIClient):
         """
         self.base_url = base_url
 
-    def send_request(self, data, timeout=30):
+    def send_request(self, data: dict, timeout: int = 30) -> requests.Response:
         """
         Send a request to the API.
 
@@ -53,30 +57,45 @@ class ResponseParser:
     """Parser for API responses."""
 
     @staticmethod
-    def parse_response(response):
+    def parse_response(
+        response: requests.Response,
+        chunked: bool = False  # Renamed parameter
+    ) -> Union[str, Generator[str, None, None]]:
         """
         Parse the response from the API.
 
         Args:
             response (requests.Response): The response to parse.
+            chunked (bool): Whether to return chunks or full response.
 
         Returns:
-            str: The parsed response content.
+            Union[str, Generator[str, None, None]]: The parsed response
+            content.
         """
-        full_response = ""
-        for line in response.iter_lines():
-            if line:
-                decoded_line = line.decode('utf-8')
-                if decoded_line.startswith('{"type": "content", "content":'):
-                    content = json.loads(decoded_line)['content']
-                    full_response += content
-        return full_response
+        def parse_chunks():
+            for line in response.iter_lines():
+                if line:
+                    decoded_line = line.decode('utf-8')
+                    if decoded_line.startswith(
+                        '{"type": "content", "content":'
+                    ):
+                        content = json.loads(decoded_line)['content']
+                        yield content
+
+        if chunked:  # Updated usage
+            return parse_chunks()
+        else:
+            return "".join(parse_chunks())
 
 
 class ConversationAPI:
     """Main class for interacting with the conversation API."""
 
-    def __init__(self, client=None, parser=None):
+    def __init__(
+        self,
+        client: APIClient = None,
+        parser: ResponseParser = None
+    ):
         """
         Initialize the ConversationAPI.
 
@@ -88,9 +107,15 @@ class ConversationAPI:
         self.parser = parser or ResponseParser()
 
     def enter_prompt(
-        self, prompt, model="", web_search=False,
-        provider="", auto_continue=True, api_key=None
-    ):
+        self,
+        prompt: str,
+        model: str = "",
+        web_search: bool = False,
+        provider: str = "",
+        auto_continue: bool = True,
+        api_key: str = None,
+        chunked: bool = False  # Renamed parameter
+    ) -> Union[str, Generator[str, None, None]]:
         """
         Send a prompt to the API and get the response.
 
@@ -101,9 +126,10 @@ class ConversationAPI:
             provider (str): The provider to use.
             auto_continue (bool): Whether to auto-continue.
             api_key (str): The API key to use.
+            chunked (bool): Whether to return chunks or full response.
 
         Returns:
-            str: The response from the API.
+            Union[str, Generator[str, None, None]]: The response from the API.
         """
         data = {
           "model": model,
@@ -115,32 +141,14 @@ class ConversationAPI:
         }
 
         response = self.client.send_request(data)
-        full_response = self.parser.parse_response(response)
+        parsed_response = self.parser.parse_response(response, chunked)
 
-        try:
-            response.close()  # Ensure the response is closed properly
-        except requests.exceptions.StreamConsumedError:
-            pass
-        except requests.RequestException:
-            pass
+        if not chunked:
+            try:
+                response.close()  # Ensure the response is closed properly
+            except requests.exceptions.StreamConsumedError:
+                pass
+            except requests.RequestException:
+                pass
 
-        return full_response
-
-
-api = ConversationAPI()
-
-
-def ask_question():
-    """
-    Continuously ask for prompts and get responses from the API.
-    """
-    while True:
-        prompt = input("Enter your prompt (or 'quit' to exit): ")
-        if prompt.lower() == 'quit':
-            break
-        result = api.enter_prompt(prompt)
-        print(result)
-
-
-if __name__ == "__main__":
-    ask_question()
+        return parsed_response
