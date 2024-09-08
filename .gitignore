@@ -1,3 +1,5 @@
-.vscode
+.vscode/
 venv/
-gpt4free
+gpt4free/
+__pycache__/
+
